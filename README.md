@@ -1,4 +1,67 @@
-# Implementing librain to your project
+# Librain XP11 v2
+
+`Librain XP11 v2` is a continuation of the original `librain`
+glass-weather renderer for `X-Plane 11`, with the project direction centered on
+VR, cleaner packaging, and more believable glass behavior when fed richer
+weather state than the predecessor was built around.
+
+This branch is not here to replace the work that came before it. It is here
+because generous developers and generous X-Plane users kept the trail open long
+enough for someone else to keep walking it.
+
+Lots of appreciation to:
+
+- `skiselkov`, for the original `librain` plugin and the renderer foundation
+  this project still stands on:
+  https://github.com/skiselkov/librain
+- `toadlife`, for the VR-oriented groundwork and practical fork work that made
+  this line worth continuing:
+  https://github.com/toadlife/librain
+
+And a heartfelt thank-you goes to the X-Plane community as well. A lot of the best
+work in this corner of flight sim exists because people share notes, test odd
+builds, tolerate broken experiments, and keep handing each other just enough
+goodwill to try one more insane idea.
+
+## What This Version Is
+
+`Librain XP11 v2` is intentionally narrow in scope:
+
+- X-Plane 11 only
+- VR-first behavior and stability
+- glass-focused cockpit weather rendering (MAY later extend to the fuselage)
+
+This version is being shaped to consume a broader, more useful weather picture
+than the original standalone plugin expected. Without getting lost in the
+weeds, that includes things like:
+
+- precipitation type and intensity
+- wind and gust behavior
+- ambient and local glass temperature tendencies
+- icing and wetness state
+- visibility and broader atmospheric context
+
+The difference from the predecessor is simple: instead of reacting to a thinner
+slice of sim state, this branch is being tuned to respond to a fuller weather
+picture and use that extra context to make the effect calmer, smarter, and more
+convincing, especially in VR.
+
+That does not mean turning the plugin into noise, chaos, or a particle circus.
+It means better judgment: lighter moisture should look lighter, heavier rain
+should read heavier, cold soaked glass should behave differently from warm
+glass, and different panes should not all act like they went to the same acting
+school.
+
+## Direction
+
+The priorities for this branch are:
+
+- better VR behavior on the XP11 OpenGL path
+- better per-surface glass response
+- better temporal stability in-headset
+
+The original integration and API notes remain below for now and can be refined
+later as the branch settles.
 
 ## Prerequisites
  - librain latest release (https://github.com/skiselkov/librain/releases)

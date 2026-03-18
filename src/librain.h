@@ -31,6 +31,57 @@ extern "C" {
 #define	MAX_WIPERS	2
 
 /*
+ * Override interface for external weather feeders.
+ * Floating-point fields use NaN to indicate "unset".
+ * Integer fields use LIBRAIN_OVERRIDE_INT_UNSET to indicate "unset".
+ */
+#define	LIBRAIN_OVERRIDE_INT_UNSET	(-1)
+
+typedef enum {
+	LIBRAIN_PRECIP_NONE = 0,
+	LIBRAIN_PRECIP_RAIN = 1,
+	LIBRAIN_PRECIP_SNOW = 2,
+	LIBRAIN_PRECIP_FREEZING = 3
+} librain_precip_type_t;
+
+typedef struct {
+	int	use_overrides;
+	int	respect_sim_temps;
+
+	float	precip_intens;
+	float	precip_rate_mm_hr;
+	int	precip_type;
+
+	float	wind_dir_degt;
+	float	wind_speed_kt;
+	float	wind_gust_kt;
+	float	wind_gust_dir_degt;
+
+	float	ambient_temp_c;
+	float	le_temp_c;
+	float	ice_ratio;
+
+	float	smoothing_tau_up_s;
+	float	smoothing_tau_down_s;
+
+	float	visibility_m;
+	float	humidity_pct;
+	float	dewpoint_c;
+
+	float	cloud_base_m[3];
+	float	cloud_top_m[3];
+	float	cloud_cover[3];
+
+	float	turbulence_sev;
+	float	thunderstorm_pct;
+
+	int	vr_mode;
+} librain_override_t;
+
+extern librain_override_t	librain_override;
+void				librain_override_init_defaults(void);
+
+/*
  * Grand Theory Description:
  *
  * librain uses custom rendering inside of X-Plane's OpenGL engine to draw

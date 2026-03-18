@@ -20,6 +20,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 #include <XPLMDisplay.h>
 #include <XPLMGraphics.h>
@@ -103,6 +104,9 @@ static bool_t		inited = B_FALSE;
 static bool_t		debug_draw = B_FALSE;
 static bool_t		wipers_visible = B_FALSE;
 
+static bool_t		override_inited = B_FALSE;
+librain_override_t	librain_override;
+
 static GLuint	screenshot_tex = 0;
 static GLuint	screenshot_fbo = 0;
 static GLuint	ws_smudge_tex = 0;
@@ -127,6 +131,8 @@ static bool	priv_depth_override = false;
 
 static bool_t	prepare_ran = B_FALSE;
 static double	precip_intens = 0;
+static double	precip_intens_smoothed = 0;
+static bool_t	precip_smoothed_inited = B_FALSE;
 static float	last_run_t = 0;
 
 static GLint	z_depth_prog = 0;
@@ -493,6 +499,132 @@ using_rev_y(void)
 	return (drs.rev_y_avail && dr_geti(&drs.rev_y) != 0);
 }
 
+static bool
+override_active(void)
+{
+	return (librain_override.use_overrides != 0);
+}
+
+static bool
+override_has_value(float v)
+{
+	return (isfinite(v));
+}
+
+static float
+get_wind_speed_kt(void)
+{
+	if (override_active() && override_has_value(librain_override.wind_speed_kt))
+		return (librain_override.wind_speed_kt);
+	return (dr_getf(&drs.wind_spd));
+}
+
+static float
+get_wind_dir_degt(void)
+{
+	if (override_active()) {
+		if (override_has_value(librain_override.wind_gust_dir_degt) &&
+		    override_has_value(librain_override.wind_gust_kt) &&
+		    librain_override.wind_gust_kt > 0.0f) {
+			return (librain_override.wind_gust_dir_degt);
+		}
+		if (override_has_value(librain_override.wind_dir_degt))
+			return (librain_override.wind_dir_degt);
+	}
+	return (dr_getf(&drs.wind_dir));
+}
+
+static float
+get_wind_speed_kt_effective(void)
+{
+	if (override_active() &&
+	    override_has_value(librain_override.wind_gust_kt) &&
+	    librain_override.wind_gust_kt > 0.0f) {
+		float base = get_wind_speed_kt();
+		return (MAX(base, librain_override.wind_gust_kt));
+	}
+	return (get_wind_speed_kt());
+}
+
+static float
+get_amb_temp_c(void)
+{
+	if (override_active() && !librain_override.respect_sim_temps &&
+	    override_has_value(librain_override.ambient_temp_c)) {
+		return (librain_override.ambient_temp_c);
+	}
+	return (dr_getf(&drs.amb_temp));
+}
+
+static float
+get_le_temp_c(void)
+{
+	if (override_active() && !librain_override.respect_sim_temps &&
+	    override_has_value(librain_override.le_temp_c)) {
+		return (librain_override.le_temp_c);
+	}
+	return (dr_getf(&drs.le_temp));
+}
+
+static float
+get_window_ice_ratio(void)
+{
+	if (override_active() && override_has_value(librain_override.ice_ratio))
+		return (clamp(librain_override.ice_ratio, 0.0f, 1.0f));
+	return (dr_getf(&drs.window_ice));
+}
+
+static bool
+vr_enabled(void)
+{
+	if (override_active() &&
+	    librain_override.vr_mode != LIBRAIN_OVERRIDE_INT_UNSET)
+		return (librain_override.vr_mode != 0);
+	if (!drs.VR_enabled_avail)
+		return (B_FALSE);
+	return (dr_geti(&drs.VR_enabled) != 0);
+}
+
+void
+librain_override_init_defaults(void)
+{
+	librain_override.use_overrides = 0;
+	librain_override.respect_sim_temps = 1;
+
+	librain_override.precip_intens = NAN;
+	librain_override.precip_rate_mm_hr = NAN;
+	librain_override.precip_type = LIBRAIN_OVERRIDE_INT_UNSET;
+
+	librain_override.wind_dir_degt = NAN;
+	librain_override.wind_speed_kt = NAN;
+	librain_override.wind_gust_kt = NAN;
+	librain_override.wind_gust_dir_degt = NAN;
+
+	librain_override.ambient_temp_c = NAN;
+	librain_override.le_temp_c = NAN;
+	librain_override.ice_ratio = NAN;
+
+	librain_override.smoothing_tau_up_s = 8.0f;
+	librain_override.smoothing_tau_down_s = 45.0f;
+
+	librain_override.visibility_m = NAN;
+	librain_override.humidity_pct = NAN;
+	librain_override.dewpoint_c = NAN;
+
+	for (int i = 0; i < 3; i++) {
+		librain_override.cloud_base_m[i] = NAN;
+		librain_override.cloud_top_m[i] = NAN;
+		librain_override.cloud_cover[i] = NAN;
+	}
+
+	librain_override.turbulence_sev = NAN;
+	librain_override.thunderstorm_pct = NAN;
+
+	librain_override.vr_mode = LIBRAIN_OVERRIDE_INT_UNSET;
+
+	override_inited = B_TRUE;
+}
+
 static void
 bind_droplets_vtx_attrs(void)
 {
@@ -555,7 +687,7 @@ static void
 update_vectors(glass_info_t *gi)
 {
 	float rot_rate = dr_getf(&drs.rot_rate);
-	double wind_spd = KT2MPS(dr_getf(&drs.wind_spd));
+	double wind_spd = KT2MPS(get_wind_speed_kt_effective());
 	double gs = dr_getf(&drs.gs);
 	vect2_t wind_comp = VECT2(0, wind_spd);
 	vect2_t gs_comp = VECT2(0, gs);
@@ -567,7 +699,7 @@ update_vectors(glass_info_t *gi)
 	gi->wp = vect2_scmul(gi->glass->wind_point, DEPTH_TEX_SZ(gi));
 
 	wind_comp = vect2_rot(wind_comp,
-	    normalize_hdg(dr_getf(&drs.wind_dir)) - dr_getf(&drs.hdg));
+	    normalize_hdg(get_wind_dir_degt()) - dr_getf(&drs.hdg));
 	wind_comp = vect2_scmul(wind_comp, gi->glass->wind_factor);
 
 	gs_comp = vect2_rot(gs_comp, dr_getf(&drs.beta));
@@ -598,7 +730,7 @@ static void
 update_glob_data(const mat4 proj_matrix, const mat4 acf_matrix, const vec4 vp)
 {
 	memcpy(glob_proj_matrix, proj_matrix, sizeof (mat4));
-	if (!drs.VR_enabled_avail || dr_geti(&drs.VR_enabled) == 0) {
+	if (!vr_enabled()) {
 		/*
 		 * Outside of VR, the projection parameters are placing
 		 * the near clipping plane very far (about 1 meter), so
@@ -775,7 +907,7 @@ ws_temp_comp(glass_info_t *gi)
 	glUniform1i(loc->depth, 1);
 
 	glUniform1f(loc->rand_seed, rand_seed);
-	glUniform1f(loc->le_temp, C2KELVIN(dr_getf(&drs.le_temp)));
+	glUniform1f(loc->le_temp, C2KELVIN(get_le_temp_c()));
 	glUniform1f(loc->cabin_temp, gi->glass->cabin_temp);
 	glUniform1f(loc->wind_fact, MAX(gi->wind, gi->thrust));
 	glUniform1f(loc->d_t, d_t);
@@ -891,7 +1023,7 @@ rain_stage1_comp_legacy(glass_info_t *gi, double d_t, float rand_seed)
 	glUniform2f(loc->gp, gi->gp.x, gi->gp.y);
 	glUniform2f(loc->tp, gi->tp.x, gi->tp.y);
 	glUniform2f(loc->wp, gi->wp.x, gi->wp.y);
-	glUniform1f(loc->wind_temp, C2KELVIN(dr_getf(&drs.amb_temp)));
+	glUniform1f(loc->wind_temp, C2KELVIN(get_amb_temp_c()));
 
 	wiper_setup_prog(gi, prog);
 
@@ -945,7 +1077,7 @@ rain_stage1_compute_move(const glass_info_t *gi, double cur_t, double d_t)
 	glUniform1f(loc->thrust_force, thrust_force);
 	glUniform1f(loc->precip_intens, pow(precip_intens, 0.7));
 	glUniform1f(loc->min_droplet_sz, min_droplet_sz);
-	glUniform1f(loc->le_temp, C2KELVIN(dr_getf(&drs.le_temp)));
+	glUniform1f(loc->le_temp, C2KELVIN(get_le_temp_c()));
 
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER,
 	    DROPLETS_SSBO_BINDING, gi->droplets_ssbo);
@@ -1104,7 +1236,7 @@ rain_stage2_normals(glass_info_t *gi)
 	glUniform1f(loc->wind, gi->wind);
 	glUniform1f(loc->precip_intens,
 	    precip_intens * gi->glass->slant_factor);
-	glUniform1f(loc->window_ice, dr_getf(&drs.window_ice));
+	glUniform1f(loc->window_ice, get_window_ice_ratio());
 
 	glutils_draw_quads(&gi->water_norm_quads, prog);
 
@@ -1464,18 +1596,71 @@ static void
 compute_precip(double now)
 {
 	double d_t = now - last_run_t;
+	double target = NAN;
+	bool precip_type_present = B_FALSE;
 
 	if (d_t <= 0)
 		return;
 
-	if (drs.xe_present && dr_geti(&drs.xe_active) != 0) {
-		precip_intens = MAX(dr_getf(&drs.xe_rain),
-		    dr_getf(&drs.xe_snow));
-	} else {
-		precip_intens = dr_getf(&drs.precip_rat);
+	if (override_active()) {
+		const double r_half = 2.0;
+
+		if (override_has_value(librain_override.precip_rate_mm_hr) &&
+		    librain_override.precip_rate_mm_hr > 0.0f) {
+			target = 1.0 - exp(-librain_override.precip_rate_mm_hr /
+			    r_half);
+		} else if (override_has_value(librain_override.precip_intens)) {
+			target = librain_override.precip_intens;
+		}
+
+		if (librain_override.precip_type != LIBRAIN_OVERRIDE_INT_UNSET &&
+		    librain_override.precip_type == LIBRAIN_PRECIP_NONE) {
+			target = 0.0;
+		} else if (librain_override.precip_type !=
+		    LIBRAIN_OVERRIDE_INT_UNSET) {
+			precip_type_present = B_TRUE;
+		}
 	}
 
-	if (precip_intens > 0.0)
+	if (!override_has_value(target)) {
+		if (drs.xe_present && dr_geti(&drs.xe_active) != 0) {
+			target = MAX(dr_getf(&drs.xe_rain),
+			    dr_getf(&drs.xe_snow));
+		} else {
+			target = dr_getf(&drs.precip_rat);
+		}
+	}
+
+	target = clamp(target, 0.0, 1.0);
+
+	if (override_active() &&
+	    override_has_value(librain_override.smoothing_tau_up_s) &&
+	    override_has_value(librain_override.smoothing_tau_down_s)) {
+		double tau;
+
+		if (!precip_smoothed_inited) {
+			precip_intens_smoothed = target;
+			precip_smoothed_inited = B_TRUE;
+		}
+
+		tau = (target > precip_intens_smoothed) ?
+		    librain_override.smoothing_tau_up_s :
+		    librain_override.smoothing_tau_down_s;
+		if (tau > 0.0) {
+			double alpha = 1.0 - exp(-d_t / tau);
+			precip_intens_smoothed =
+			    alpha * target + (1.0 - alpha) * precip_intens_smoothed;
+		} else {
+			precip_intens_smoothed = target;
+		}
+		precip_intens = clamp(precip_intens_smoothed, 0.0, 1.0);
+	} else {
+		precip_intens = target;
+		precip_intens_smoothed = precip_intens;
+		precip_smoothed_inited = B_TRUE;
+	}
+
+	if (precip_intens > 0.0 || precip_type_present)
 		last_rain_t = now;
 
 	last_run_t = now;
@@ -1582,6 +1767,8 @@ void
 librain_draw_prepare_eye(unsigned call_index, bool_t force)
 {
 	double now = dr_getf(&drs.sim_time);
+	float amb_temp = get_amb_temp_c();
+	bool precip_active = (precip_intens > 0.0);
 
 	check_librain_init();
 
@@ -1590,15 +1777,20 @@ librain_draw_prepare_eye(unsigned call_index, bool_t force)
 	    mtx_info[call_index].acf_matrix,
 	    mtx_info[call_index].viewport);
 
-	if (precip_intens > 0 || dr_getf(&drs.amb_temp) <= 4)
+	if (override_active() &&
+	    librain_override.precip_type != LIBRAIN_OVERRIDE_INT_UNSET &&
+	    librain_override.precip_type != LIBRAIN_PRECIP_NONE) {
+		precip_active = B_TRUE;
+	}
+
+	if (precip_active || amb_temp <= 4)
 		last_rain_t = now;
 
 	/*
 	 * FIXME: avoid running when we don't have ice on the
 	 * windshield, even if the outside air temp is below zero.
 	 */
-	if (now - last_rain_t > RAIN_DRAW_TIMEOUT && !force &&
-	    dr_getf(&drs.amb_temp) > 4) {
+	if (now - last_rain_t > RAIN_DRAW_TIMEOUT && !force && amb_temp > 4) {
 		prepare_ran = B_FALSE;
 		return;
 	}
@@ -2441,6 +2633,9 @@ librain_init(const char *the_shaderpath, const librain_glass_t *glass,
 	    "De-initialize the library first using librain_fini().%s", "");
 	inited = B_TRUE;
 	GLUTILS_RESET_ERRORS();
+
+	if (!override_inited)
+		librain_override_init_defaults();
 
 	if (!librain_glob_init())
 		return (B_FALSE);

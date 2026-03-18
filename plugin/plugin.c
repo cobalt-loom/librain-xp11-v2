@@ -20,6 +20,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <ctype.h>
 
 #include <XPLMDisplay.h>
 #include <XPLMPlugin.h>
@@ -36,9 +37,9 @@
 #include "../src/obj8.h"
 #include "../src/surf_ice.h"
 
-#define	PLUGIN_NAME		"librain"
-#define	PLUGIN_SIG		"skiselkov.librain"
-#define	PLUGIN_DESCRIPTION	"librain (DO NOT DISABLE)"
+#define	PLUGIN_NAME		"Librain XP11 v2"
+#define	PLUGIN_SIG		"cobaltloom.librainxp11v2"
+#define	PLUGIN_DESCRIPTION	"Rain and icing glass effects for X-Plane 11 in VR"
 
 typedef struct {
 	obj8_t		*obj;
@@ -128,6 +129,32 @@ static struct {
 	dr_t		debug_draw;
 	dr_t		wipers_visible;
 } drs;
+
+static struct {
+	dr_t		use_overrides;
+	dr_t		respect_sim_temps;
+	dr_t		precip_intens;
+	dr_t		precip_rate_mm_hr;
+	dr_t		precip_type;
+	dr_t		wind_dir_degt;
+	dr_t		wind_speed_kt;
+	dr_t		wind_gust_kt;
+	dr_t		wind_gust_dir_degt;
+	dr_t		ambient_temp_c;
+	dr_t		le_temp_c;
+	dr_t		ice_ratio;
+	dr_t		smoothing_tau_up_s;
+	dr_t		smoothing_tau_down_s;
+	dr_t		visibility_m;
+	dr_t		humidity_pct;
+	dr_t		dewpoint_c;
+	dr_t		cloud_base_m;
+	dr_t		cloud_top_m;
+	dr_t		cloud_cover;
+	dr_t		turbulence_sev;
+	dr_t		thunderstorm_pct;
+	dr_t		vr_mode;
+} override_drs;
 
 static void
 wiper_cb(dr_t *dr, void *value_p)
@@ -328,6 +355,239 @@ prepare_system_paths(void)
 		memmove(plugindir, &plugindir[xpdir_len],
 		    plugindir_len - xpdir_len + 1);
 	}
+}
+
+static char *
+trim_ws(char *s)
+{
+	char *end;
+
+	while (*s && isspace((unsigned char)*s))
+		s++;
+	if (*s == '\0')
+		return (s);
+	end = s + strlen(s) - 1;
+	while (end > s && isspace((unsigned char)*end))
+		*end-- = '\0';
+	return (s);
+}
+
+static bool_t
+parse_int_value(const char *s, int *out)
+{
+	char *end = NULL;
+	long v;
+
+	ASSERT(out != NULL);
+	v = strtol(s, &end, 10);
+	if (end == s)
+		return (B_FALSE);
+	*out = (int)v;
+	return (B_TRUE);
+}
+
+static bool_t
+parse_float_value(const char *s, float *out)
+{
+	char *end = NULL;
+	double v;
+
+	ASSERT(out != NULL);
+	v = strtod(s, &end);
+	if (end == s)
+		return (B_FALSE);
+	*out = (float)v;
+	return (B_TRUE);
+}
+
+static bool_t
+parse_indexed_key(const char *key, const char *prefix, int *idx)
+{
+	size_t len;
+	const char *p;
+	char *end = NULL;
+	long v;
+
+	ASSERT(key != NULL);
+	ASSERT(prefix != NULL);
+	ASSERT(idx != NULL);
+
+	len = strlen(prefix);
+	if (strncmp(key, prefix, len) != 0)
+		return (B_FALSE);
+	p = key + len;
+	if (*p != '[')
+		return (B_FALSE);
+	p++;
+	v = strtol(p, &end, 10);
+	if (end == p || *end != ']')
+		return (B_FALSE);
+	if (v < 0 || v >= 3)
+		return (B_FALSE);
+	*idx = (int)v;
+	return (B_TRUE);
+}
+
+static void
+apply_override_cfg(const char *key, const char *value)
+{
+	int idx = -1;
+	int ival;
+	float fval;
+
+	if (strcmp(key, "override.use_overrides") == 0) {
+		if (parse_int_value(value, &ival))
+			librain_override.use_overrides = ival;
+		return;
+	}
+	if (strcmp(key, "override.respect_sim_temps") == 0) {
+		if (parse_int_value(value, &ival))
+			librain_override.respect_sim_temps = ival;
+		return;
+	}
+	if (strcmp(key, "override.precip_intens") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.precip_intens = fval;
+		return;
+	}
+	if (strcmp(key, "override.precip_rate_mm_hr") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.precip_rate_mm_hr = fval;
+		return;
+	}
+	if (strcmp(key, "override.precip_type") == 0) {
+		if (parse_int_value(value, &ival))
+			librain_override.precip_type = ival;
+		return;
+	}
+	if (strcmp(key, "override.wind_dir_degt") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.wind_dir_degt = fval;
+		return;
+	}
+	if (strcmp(key, "override.wind_speed_kt") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.wind_speed_kt = fval;
+		return;
+	}
+	if (strcmp(key, "override.wind_gust_kt") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.wind_gust_kt = fval;
+		return;
+	}
+	if (strcmp(key, "override.wind_gust_dir_degt") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.wind_gust_dir_degt = fval;
+		return;
+	}
+	if (strcmp(key, "override.ambient_temp_c") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.ambient_temp_c = fval;
+		return;
+	}
+	if (strcmp(key, "override.le_temp_c") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.le_temp_c = fval;
+		return;
+	}
+	if (strcmp(key, "override.ice_ratio") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.ice_ratio = fval;
+		return;
+	}
+	if (strcmp(key, "override.smoothing_tau_up_s") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.smoothing_tau_up_s = fval;
+		return;
+	}
+	if (strcmp(key, "override.smoothing_tau_down_s") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.smoothing_tau_down_s = fval;
+		return;
+	}
+	if (strcmp(key, "override.visibility_m") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.visibility_m = fval;
+		return;
+	}
+	if (strcmp(key, "override.humidity_pct") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.humidity_pct = fval;
+		return;
+	}
+	if (strcmp(key, "override.dewpoint_c") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.dewpoint_c = fval;
+		return;
+	}
+	if (parse_indexed_key(key, "override.cloud_base_m", &idx)) {
+		if (parse_float_value(value, &fval))
+			librain_override.cloud_base_m[idx] = fval;
+		return;
+	}
+	if (parse_indexed_key(key, "override.cloud_top_m", &idx)) {
+		if (parse_float_value(value, &fval))
+			librain_override.cloud_top_m[idx] = fval;
+		return;
+	}
+	if (parse_indexed_key(key, "override.cloud_cover", &idx)) {
+		if (parse_float_value(value, &fval))
+			librain_override.cloud_cover[idx] = fval;
+		return;
+	}
+	if (strcmp(key, "override.turbulence_sev") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.turbulence_sev = fval;
+		return;
+	}
+	if (strcmp(key, "override.thunderstorm_pct") == 0) {
+		if (parse_float_value(value, &fval))
+			librain_override.thunderstorm_pct = fval;
+		return;
+	}
+	if (strcmp(key, "override.vr_mode") == 0) {
+		if (parse_int_value(value, &ival))
+			librain_override.vr_mode = ival;
+		return;
+	}
+}
+
+static void
+load_override_cfg(void)
+{
+	char *cfg_path;
+	FILE *fp;
+	char line[512];
+
+	cfg_path = mkpathname(xpdir, plugindir, "librain.cfg", NULL);
+	fp = fopen(cfg_path, "r");
+	if (fp == NULL) {
+		lacf_free(cfg_path);
+		return;
+	}
+
+	while (fgets(line, sizeof (line), fp) != NULL) {
+		char *eq;
+		char *key;
+		char *value;
+
+		key = trim_ws(line);
+		if (*key == '\0' || *key == '#' || *key == ';')
+			continue;
+		eq = strchr(key, '=');
+		if (eq == NULL)
+			continue;
+		*eq = '\0';
+		value = trim_ws(eq + 1);
+		key = trim_ws(key);
+		if (*key == '\0')
+			continue;
+		apply_override_cfg(key, value);
+	}
+
+	fclose(fp);
+	lacf_free(cfg_path);
+	logMsg("librain: override config loaded");
 }
 
 static void
@@ -642,6 +902,9 @@ XPluginStart(char *name, char *sig, char *desc)
 		obj_data_init(&z_depth_objs[i], prefix);
 	}
 
+	librain_override_init_defaults();
+	load_override_cfg();
+
 	dr_create_i(&drs.librain_do_init, (int *)&librain_do_init, B_TRUE,
 	    "librain/initialize");
 	drs.librain_do_init.write_cb = librain_init_cb;
@@ -657,6 +920,79 @@ XPluginStart(char *name, char *sig, char *desc)
 	dr_create_i(&drs.wipers_visible, (int *)&wipers_visible, B_TRUE,
 	    "librain/wipers_visible");
 	drs.wipers_visible.write_cb = wiper_cb;
+
+	dr_create_i(&override_drs.use_overrides,
+	    &librain_override.use_overrides, B_TRUE,
+	    "librain/override/use_overrides");
+	dr_create_i(&override_drs.respect_sim_temps,
+	    &librain_override.respect_sim_temps, B_TRUE,
+	    "librain/override/respect_sim_temps");
+	dr_create_f(&override_drs.precip_intens,
+	    &librain_override.precip_intens, B_TRUE,
+	    "librain/override/precip_intens");
+	dr_create_f(&override_drs.precip_rate_mm_hr,
+	    &librain_override.precip_rate_mm_hr, B_TRUE,
+	    "librain/override/precip_rate_mm_hr");
+	dr_create_i(&override_drs.precip_type,
+	    &librain_override.precip_type, B_TRUE,
+	    "librain/override/precip_type");
+	dr_create_f(&override_drs.wind_dir_degt,
+	    &librain_override.wind_dir_degt, B_TRUE,
+	    "librain/override/wind_dir_degt");
+	dr_create_f(&override_drs.wind_speed_kt,
+	    &librain_override.wind_speed_kt, B_TRUE,
+	    "librain/override/wind_speed_kt");
+	dr_create_f(&override_drs.wind_gust_kt,
+	    &librain_override.wind_gust_kt, B_TRUE,
+	    "librain/override/wind_gust_kt");
+	dr_create_f(&override_drs.wind_gust_dir_degt,
+	    &librain_override.wind_gust_dir_degt, B_TRUE,
+	    "librain/override/wind_gust_dir_degt");
+	dr_create_f(&override_drs.ambient_temp_c,
+	    &librain_override.ambient_temp_c, B_TRUE,
+	    "librain/override/ambient_temp_c");
+	dr_create_f(&override_drs.le_temp_c,
+	    &librain_override.le_temp_c, B_TRUE,
+	    "librain/override/le_temp_c");
+	dr_create_f(&override_drs.ice_ratio,
+	    &librain_override.ice_ratio, B_TRUE,
+	    "librain/override/ice_ratio");
+	dr_create_f(&override_drs.smoothing_tau_up_s,
+	    &librain_override.smoothing_tau_up_s, B_TRUE,
+	    "librain/override/smoothing_tau_up_s");
+	dr_create_f(&override_drs.smoothing_tau_down_s,
+	    &librain_override.smoothing_tau_down_s, B_TRUE,
+	    "librain/override/smoothing_tau_down_s");
+	dr_create_f(&override_drs.visibility_m,
+	    &librain_override.visibility_m, B_TRUE,
+	    "librain/override/visibility_m");
+	dr_create_f(&override_drs.humidity_pct,
+	    &librain_override.humidity_pct, B_TRUE,
+	    "librain/override/humidity_pct");
+	dr_create_f(&override_drs.dewpoint_c,
+	    &librain_override.dewpoint_c, B_TRUE,
+	    "librain/override/dewpoint_c");
+	dr_create_vf(&override_drs.cloud_base_m,
+	    librain_override.cloud_base_m,
+	    sizeof (librain_override.cloud_base_m) / sizeof (float), B_TRUE,
+	    "librain/override/cloud_base_m");
+	dr_create_vf(&override_drs.cloud_top_m,
+	    librain_override.cloud_top_m,
+	    sizeof (librain_override.cloud_top_m) / sizeof (float), B_TRUE,
+	    "librain/override/cloud_top_m");
+	dr_create_vf(&override_drs.cloud_cover,
+	    librain_override.cloud_cover,
+	    sizeof (librain_override.cloud_cover) / sizeof (float), B_TRUE,
+	    "librain/override/cloud_cover");
+	dr_create_f(&override_drs.turbulence_sev,
+	    &librain_override.turbulence_sev, B_TRUE,
+	    "librain/override/turbulence_sev");
+	dr_create_f(&override_drs.thunderstorm_pct,
+	    &librain_override.thunderstorm_pct, B_TRUE,
+	    "librain/override/thunderstorm_pct");
+	dr_create_i(&override_drs.vr_mode,
+	    &librain_override.vr_mode, B_TRUE,
+	    "librain/override/vr_mode");
 
 	return (1);
 errout:
@@ -678,6 +1014,30 @@ XPluginStop(void)
 	dr_delete(&drs.librain_do_init);
 	dr_delete(&drs.librain_inited);
 	dr_delete(&drs.num_glass_use);
+
+	dr_delete(&override_drs.vr_mode);
+	dr_delete(&override_drs.thunderstorm_pct);
+	dr_delete(&override_drs.turbulence_sev);
+	dr_delete(&override_drs.cloud_cover);
+	dr_delete(&override_drs.cloud_top_m);
+	dr_delete(&override_drs.cloud_base_m);
+	dr_delete(&override_drs.dewpoint_c);
+	dr_delete(&override_drs.humidity_pct);
+	dr_delete(&override_drs.visibility_m);
+	dr_delete(&override_drs.smoothing_tau_down_s);
+	dr_delete(&override_drs.smoothing_tau_up_s);
+	dr_delete(&override_drs.ice_ratio);
+	dr_delete(&override_drs.le_temp_c);
+	dr_delete(&override_drs.ambient_temp_c);
+	dr_delete(&override_drs.wind_gust_dir_degt);
+	dr_delete(&override_drs.wind_gust_kt);
+	dr_delete(&override_drs.wind_speed_kt);
+	dr_delete(&override_drs.wind_dir_degt);
+	dr_delete(&override_drs.precip_type);
+	dr_delete(&override_drs.precip_rate_mm_hr);
+	dr_delete(&override_drs.precip_intens);
+	dr_delete(&override_drs.respect_sim_temps);
+	dr_delete(&override_drs.use_overrides);
 
 	for (int i = 0; i < MAX_GLASS; i++)
 		glass_data_fini(i);
