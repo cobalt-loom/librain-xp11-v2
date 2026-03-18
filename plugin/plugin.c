@@ -38,7 +38,7 @@
 #include "../src/surf_ice.h"
 
 #define	PLUGIN_NAME		"Librain XP11 v2"
-#define	PLUGIN_SIG		"cobaltloom.librainxp11v2"
+#define	PLUGIN_SIG		"librain.xp11v2"
 #define	PLUGIN_DESCRIPTION	"Rain and icing glass effects for X-Plane 11 in VR"
 
 typedef struct {
